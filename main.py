@@ -58,7 +58,7 @@ async def transcribe(audio: UploadFile = File(...)):
 
     if not os.path.exists(wav_path):
         cleanup_paths([raw_path])
-        raise HTTPException(status_code=5G00, detail="Conversion failed")
+        raise HTTPException(status_code=500, detail="Conversion failed")
 
     # executa whisper.cpp
     try:
@@ -82,3 +82,4 @@ def cleanup_paths(paths):
                 os.remove(p)
         except:
             pass
+
