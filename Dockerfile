@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y \
 
 # 3️⃣ Baixar e compilar o whisper.cpp
 RUN git clone https://github.com/ggerganov/whisper.cpp /whisper.cpp \
-    && cd /whisper.cpp && make -j1 \
+    && cd /whisper.cpp && make -j \
     && ls -l /whisper.cpp/main
 
 
@@ -46,4 +46,5 @@ RUN cp /whisper.cpp/main /app/main-whisper || true
 # 8️⃣ Expor porta e iniciar FastAPI
 EXPOSE 3000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3000"]
+
 
