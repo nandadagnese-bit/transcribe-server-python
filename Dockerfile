@@ -1,4 +1,4 @@
-# Dockerfile - Versão Final (Caminho Confirmado)
+# Dockerfile - VERSÃO FINAL E CORRIGIDA (Ordem dos Comandos)
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -11,15 +11,18 @@ RUN apt-get update && apt-get install -y \
 RUN git clone https://github.com/ggerganov/whisper.cpp /whisper.cpp \
     && cd /whisper.cpp && make -j$(nproc)
 
-# --- CORREÇÕES DE CAMINHO E PERMISSÃO ---
+# ⭐️ CORREÇÃO DA ORDEM: DEFINIR O DIRETÓRIO DE TRABALHO AGORA
+# Criamos a pasta /app para que o cp e os próximos comandos possam usá-la.
+WORKDIR /app 
 
-# 3. ⭐️ COPIA DO BINÁRIO: Caminho exato confirmado!
+# --- COPIAR O BINÁRIO ---
+
+# 3. COPIA DO BINÁRIO: Caminho exato confirmado!
 RUN cp /whisper.cpp/build/bin/main /app/main-whisper
-# ⭐️ GARANTIA: Adicionamos o chmod para garantir que o binário possa ser executado
 RUN chmod +x /app/main-whisper
 
 # 4. Criar app e instalar dependencias Python
-WORKDIR /app
+# A pasta /app já existe agora, então o COPY pode ser feito.
 COPY requirements.txt /app/
 RUN python3 -m pip install --upgrade pip
 RUN pip3 install -r requirements.txt
@@ -34,5 +37,5 @@ COPY models/ggml-tiny.bin /app/models/
 # 7. Expor porta
 EXPOSE 3000
 
-# 8. Comando default (Este comando inicia o servidor FastAPI)
+# 8. Comando default
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3000"]
