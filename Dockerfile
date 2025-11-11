@@ -1,46 +1,66 @@
 # ---------------------------------------------------------
-# Dockerfile - Versão 3: Compilação Básica (sem BLAS)
+# Dockerfile - SOLUÇÃO FINAL COM ALPINE BUILDER
+# Usa Alpine (leve) para compilar e Ubuntu para rodar.
 # ---------------------------------------------------------
 
+# --- STAGE 1: COMPILADOR (USANDO ALPINE) ---
+FROM alpine:3.18 AS builder
+WORKDIR /tmp/build
+
+# 1️⃣ Instalar Ferramentas de Compilação no Alpine
+# Dependências do Alpine são diferentes
+RUN apk update && apk add \
+    build-base \
+    git \
+    cmake \
+    ffmpeg-dev \
+    libsndfile-dev \
+    openblas-dev \
+    # Dependências do Python/FastAPI
+    python3 \
+    py3-pip \
+    && rm -rf /var/cache/apk/*
+
+# 2️⃣ Clonar e Compilar o whisper.cpp com OpenBLAS (Agora no Alpine)
+RUN git clone https://github.com/ggerganov/whisper.cpp.git /tmp/whisper
+
+# Compilar com OpenBLAS (usando o 'make' simples no Alpine/musl, que geralmente funciona)
+RUN cd /tmp/whisper && \
+    make clean && \
+    make -j GGML_BLAS=1
+
+# ---------------------------------------------------------
+
+# --- STAGE 2: IMAGEM FINAL DE PRODUÇÃO (VOLTANDO AO UBUNTU) ---
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 1️⃣ Instalar dependências básicas + Ferramentas de Compilação
-# Removemos o libopenblas-dev
+# 1️⃣ Instalar dependências básicas de runtime do Ubuntu
 RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    libsndfile1 \
     python3 \
     python3-pip \
-    build-essential \
-    git \
-    cmake \
+    ffmpeg \
+    libsndfile1 \
+    libopenblas-base \
     && rm -rf /var/lib/apt/lists/*
 
 # 2️⃣ Definir pasta de trabalho
 WORKDIR /app
 
-# 3️⃣ Clonar e Compilar o whisper.cpp na versão padrão
-RUN git clone https://github.com/ggerganov/whisper.cpp.git /tmp/whisper
+# 3️⃣ COPIAR APENAS O BINÁRIO COMPILADO DO STAGE ANTERIOR (Alpine)
+# O binário no Alpine está em /tmp/whisper/main
+COPY --from=builder /tmp/whisper/main /app/main-whisper
 
-# O erro estava aqui. Vamos tentar o comando 'make' simples, que é o padrão.
-RUN cd /tmp/whisper && make clean && make
-
-# Copiar o binário compilado. Se usarmos 'make' puro, o binário vai para /tmp/whisper/main
-RUN cp /tmp/whisper/main /app/main-whisper
-
-# 4️⃣ Limpeza (Opcional, mas recomendado)
-# Removemos o libopenblas-dev da limpeza também
-RUN rm -rf /tmp/whisper && \
-    apt-get purge -y git build-essential cmake && \
-    apt-get autoremove -y
-
-# 5️⃣ Copiar o restante (código Python e modelos)
+# 4️⃣ Copiar o restante (código Python, requisitos e modelos)
 COPY . /app/
+# Garantir permissão de execução
+RUN chmod +x /app/main-whisper
 
-# 6️⃣ Instalar dependências do Python
+# 5️⃣ Instalar dependências do Python
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# 7️⃣ Expor porta e Iniciar
+# 6️⃣ Expor porta padrão do servidor FastAPI
 EXPOSE 3000
+
+# 7️⃣ Comando para iniciar o servidor
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3000"]
