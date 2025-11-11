@@ -28,7 +28,7 @@ app.add_middleware(
 
 # --- O RESTO DO SEU CÓDIGO PERMANECE IGUAL ---
 
-WHISPER_BIN = "/whisper.cpp/main"          # whisper.cpp compilado
+WHISPER_BIN = "/app/main-whisper"              # ✅ Caminho corrigido (copiado pelo Dockerfile)
 MODEL_PATH = "/app/models/ggml-small.bin"      # modelo baixado no Dockerfile
 UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -77,3 +77,4 @@ def cleanup_paths(paths):
                 os.remove(p)
         except:
             pass
+
