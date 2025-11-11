@@ -26,10 +26,12 @@ app.add_middleware(
     allow_headers=["*"],       # Permitir todos os cabeçalhos
 )
 
-# --- O RESTO DO SEU CÓDIGO PERMANECE IGUAL ---
+# --- O RESTO DO SEU CÓDIGO ---
 
-WHISPER_BIN = "/app/main-whisper"              # ✅ Caminho corrigido (copiado pelo Dockerfile)
-MODEL_PATH = "/app/models/ggml-small.bin"      # modelo baixado no Dockerfile
+# ✅ 4. CAMINHOS ATUALIZADOS (PARA CORRESPONDER AO NOVO DOCKERFILE)
+WHISPER_BIN = "/app/main-whisper"                # Caminho do executável pré-compilado
+MODEL_PATH = "/app/models/ggml-tiny.bin"         # Caminho do modelo 'tiny'
+
 UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -39,13 +41,14 @@ async def root():
 
 @app.post("/transcribe")
 async def transcribe(audio: UploadFile = File(...)):
-    # ... (seu código de transcrição continua aqui) ...
+    # salva arquivo recebido
     file_id = str(uuid.uuid4())
     raw_path = os.path.join(UPLOAD_DIR, f"{file_id}_{audio.filename}")
     with open(raw_path, "wb") as f:
         shutil.copyfileobj(audio.file, f)
 
     wav_path = raw_path + ".wav"
+    # converte para WAV 16k mono
     try:
         p = Popen(["ffmpeg", "-y", "-i", raw_path, "-ac", "1", "-ar", "16000", wav_path], stdout=PIPE, stderr=PIPE)
         out, err = p.communicate(timeout=30)
@@ -55,10 +58,12 @@ async def transcribe(audio: UploadFile = File(...)):
 
     if not os.path.exists(wav_path):
         cleanup_paths([raw_path])
-        raise HTTPException(status_code=500, detail="Conversion failed")
+        raise HTTPException(status_code=5G00, detail="Conversion failed")
 
+    # executa whisper.cpp
     try:
-        proc = Popen([WHISPER_BIN, "-m", MODEL_PATH, "-f", wav_path], stdout=PIPE, stderr=PIPE)
+        # ✅ 5. ADICIONADO FLAG DE 'TINY' MODEL (para garantir)
+        proc = Popen([WHISPER_BIN, "-m", MODEL_PATH, "-f", wav_path, "-l", "auto"], stdout=PIPE, stderr=PIPE)
         out, err = proc.communicate(timeout=120)
     except TimeoutExpired:
         cleanup_paths([raw_path, wav_path])
@@ -77,4 +82,3 @@ def cleanup_paths(paths):
                 os.remove(p)
         except:
             pass
-
