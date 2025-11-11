@@ -40,7 +40,6 @@ async def root():
 @app.post("/transcribe")
 async def transcribe(audio: UploadFile = File(...)):
     # ... (seu código de transcrição continua aqui) ...
-    # ... (não precisa mudar nada depois daqui) ...
     file_id = str(uuid.uuid4())
     raw_path = os.path.join(UPLOAD_DIR, f"{file_id}_{audio.filename}")
     with open(raw_path, "wb") as f:
