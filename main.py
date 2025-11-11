@@ -39,14 +39,14 @@ async def root():
 
 @app.post("/transcribe")
 async def transcribe(audio: UploadFile = File(...)):
-    # salva arquivo recebido
+    # ... (seu código de transcrição continua aqui) ...
+    # ... (não precisa mudar nada depois daqui) ...
     file_id = str(uuid.uuid4())
     raw_path = os.path.join(UPLOAD_DIR, f"{file_id}_{audio.filename}")
     with open(raw_path, "wb") as f:
         shutil.copyfileobj(audio.file, f)
 
     wav_path = raw_path + ".wav"
-    # converte para WAV 16k mono
     try:
         p = Popen(["ffmpeg", "-y", "-i", raw_path, "-ac", "1", "-ar", "16000", wav_path], stdout=PIPE, stderr=PIPE)
         out, err = p.communicate(timeout=30)
@@ -58,7 +58,6 @@ async def transcribe(audio: UploadFile = File(...)):
         cleanup_paths([raw_path])
         raise HTTPException(status_code=500, detail="Conversion failed")
 
-    # executa whisper.cpp
     try:
         proc = Popen([WHISPER_BIN, "-m", MODEL_PATH, "-f", wav_path], stdout=PIPE, stderr=PIPE)
         out, err = proc.communicate(timeout=120)
