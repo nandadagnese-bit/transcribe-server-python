@@ -1,12 +1,11 @@
 # ---------------------------------------------------------
-# Dockerfile - Servidor FastAPI + Whisper.cpp no Render
+# Dockerfile - Servidor FastAPI + Whisper.cpp (pré-compilado)
 # ---------------------------------------------------------
 
-# 1️⃣ Imagem base do Ubuntu
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 2️⃣ Instalar dependências do sistema
+# 1️⃣ Instalar dependências do sistema
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
@@ -20,33 +19,31 @@ RUN apt-get update && apt-get install -y \
     python3-venv \
     python3-pip
 
-# 3️⃣ Baixar e compilar o whisper.cpp
-RUN git clone https://github.com/ggerganov/whisper.cpp /whisper.cpp \
-    && cd /whisper.cpp && make -j \
+# 2️⃣ Baixar o whisper.cpp já compilado (binário pronto)
+RUN mkdir -p /whisper.cpp && cd /whisper.cpp \
+    && wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/whisper-linux-x64.zip -O whisper.zip \
+    && unzip whisper.zip \
+    && chmod +x /whisper.cpp/main \
     && ls -l /whisper.cpp/main
 
+# 3️⃣ Baixar o modelo "tiny" (leve e rápido)
+RUN cd /whisper.cpp && mkdir -p models \
+    && wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin -O ./models/ggml-tiny.bin
 
-# 4️⃣ Baixar o modelo "small" (pode trocar por tiny/base/medium)
-RUN cd /whisper.cpp && ./models/download-ggml-model.sh small
-
-# 5️⃣ Configurar ambiente Python e dependências
+# 4️⃣ Configurar ambiente Python e dependências
 WORKDIR /app
 COPY requirements.txt /app/
 RUN python3 -m pip install --upgrade pip
 RUN pip3 install -r requirements.txt
 
-# 6️⃣ Copiar o código principal
+# 5️⃣ Copiar o código principal
 COPY main.py /app/
 
-# 7️⃣ Copiar o modelo E O EXECUTÁVEL para a pasta da aplicação
+# 6️⃣ Copiar o modelo e o executável para a aplicação
 RUN mkdir -p /app/models
-RUN cp /whisper.cpp/models/ggml-small.bin /app/models/ || true
-# ✅ ESTA É A NOVA LINHA:
-RUN cp /whisper.cpp/main /app/main-whisper || true
+RUN cp /whisper.cpp/models/ggml-tiny.bin /app/models/
+RUN cp /whisper.cpp/main /app/main-whisper
 
-# 8️⃣ Expor porta e iniciar FastAPI
+# 7️⃣ Expor porta e iniciar servidor FastAPI
 EXPOSE 3000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3000"]
-
-
-
