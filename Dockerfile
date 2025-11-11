@@ -36,9 +36,11 @@ RUN pip3 install -r requirements.txt
 # 6️⃣ Copiar o código principal
 COPY main.py /app/
 
-# 7️⃣ Copiar o modelo para a pasta da aplicação
+# 7️⃣ Copiar o modelo E O EXECUTÁVEL para a pasta da aplicação
 RUN mkdir -p /app/models
 RUN cp /whisper.cpp/models/ggml-small.bin /app/models/ || true
+# ✅ ESTA É A NOVA LINHA:
+RUN cp /whisper.cpp/main /app/main-whisper || true
 
 # 8️⃣ Expor porta e iniciar FastAPI
 EXPOSE 3000
