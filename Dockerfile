@@ -16,16 +16,16 @@ RUN apt-get update && apt-get install -y \
 # 2️⃣ Definir pasta de trabalho
 WORKDIR /app
 
-# 3️⃣ Copiar tudo do repositório (inclusive o modelo e o binário)
+# 3️⃣ Copiar todo o repositório (incluindo binário Linux e modelos)
 COPY . /app/
 
-# 4️⃣ Garantir permissão de execução para o binário
+# 4️⃣ Garantir permissão de execução para o binário Linux
 RUN chmod +x /app/main-whisper
 
 # 5️⃣ Instalar dependências do Python
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# 6️⃣ Expor porta padrão
+# 6️⃣ Expor porta padrão do servidor FastAPI
 EXPOSE 3000
 
 # 7️⃣ Comando para iniciar o servidor
