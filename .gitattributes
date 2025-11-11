@@ -1,0 +1,2 @@
+main-whisper filter=lfs diff=lfs merge=lfs -text
+models/ggml-tiny.bin filter=lfs diff=lfs merge=lfs -text
