@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     cmake \
     git \
     libsndfile1 \
+    libsndfile1-dev \
     ffmpeg \
     wget \
     unzip \
@@ -46,5 +47,6 @@ RUN cp /whisper.cpp/main /app/main-whisper || true
 # 8️⃣ Expor porta e iniciar FastAPI
 EXPOSE 3000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3000"]
+
 
 
