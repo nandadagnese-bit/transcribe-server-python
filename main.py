@@ -52,64 +52,44 @@ def cleanup_paths(paths: List[str]):
         except OSError:
             pass
 
+# main.py - DENTRO da função convert_and_transcribe_sync
+
 def convert_and_transcribe_sync(raw_audio_data: bytes, segment_id: str) -> str:
     """
-    Função SÍNCRONA que converte o áudio RAW e chama o whisper.cpp.
+    MODO TESTE: Tenta transcrever um arquivo WAV estático (test.wav)
+    para verificar se o binário e o modelo estão funcionando.
     """
-    raw_path = os.path.join(UPLOAD_DIR, f"{segment_id}.webm")
-    wav_path = os.path.join(UPLOAD_DIR, f"{segment_id}.wav")
+    test_wav_path = "/app/test.wav" 
+    
+    if not os.path.exists(test_wav_path) or os.path.getsize(test_wav_path) < 100:
+        return "ERRO DE TESTE: test.wav não encontrado ou vazio no contêiner."
 
     try:
-        # 1. SALVAR DADOS RAW (WebM/Opus)
-        with open(raw_path, "wb") as f:
-            f.write(raw_audio_data)
-
-        # 2. CONVERTER PARA WAV 16kHz MONO (para o whisper.cpp)
-        p = Popen([
-            "ffmpeg", "-y", "-i", raw_path,
-            "-ac", "1", "-ar", "16000",
-            wav_path
-        ], stdout=PIPE, stderr=PIPE)
-        out, err = p.communicate(timeout=10)
-        
-        # ⭐️ DIAGNÓSTICO CRÍTICO: Verifica se o arquivo WAV foi criado corretamente ⭐️
-        wav_size = 0
-        if os.path.exists(wav_path):
-             wav_size = os.path.getsize(wav_path)
-             
-        # Arquivos WAV válidos (16kHz, 16bit) devem ter pelo menos alguns KB.
-        # 1000 bytes é um limite seguro para evitar arquivos vazios ou headers incompletos.
-        if wav_size < 1000: 
-            ffmpeg_error = err.decode('utf-8', errors='ignore')
-            # Lança o erro de forma detalhada para o log do Render
-            raise Exception(f"FFmpeg/WAV inválido. Tamanho WAV: {wav_size} bytes. Saída do FFmpeg: {ffmpeg_error}")
-
-        # 3. EXECUTAR WHISPER.CPP
+        # 3. EXECUTAR WHISPER.CPP com o arquivo de teste
         proc = Popen([
             WHISPER_BIN, 
             "-m", MODEL_PATH, 
-            "-f", wav_path, 
+            "-f", test_wav_path, # Usa o arquivo de teste!
             "-l", "auto",
-            "-t", "4",
-            "-p", "0" 
+            "-t", "4", "-p", "0" 
         ], stdout=PIPE, stderr=PIPE)
         
-        out, err = proc.communicate(timeout=45) 
+        out, err = proc.communicate(timeout=15) # Timeout reduzido para teste
         
         if proc.returncode != 0:
-             # Retorna o erro exato do subprocesso Whisper, se houver
              whisper_stderr = err.decode('utf-8', errors='ignore')
-             raise Exception(f"Whisper falhou (Código {proc.returncode}). STDERR: {whisper_stderr}")
+             # Se o Whisper falhar, o problema é permissão ou modelo
+             raise Exception(f"ERRO CRÍTICO (TESTE). STDERR: {whisper_stderr}")
 
         # 4. EXTRAIR O TEXTO
         output = out.decode('utf-8', errors='ignore')
         transcribed_text = output.strip().split('\n')[-1].split(':')[-1].strip()
         
-        return transcribed_text
+        return f"[TESTE SUCESSO] Texto: {transcribed_text}"
 
     finally:
-        # 5. LIMPEZA
-        cleanup_paths([raw_path, wav_path])
+        # Limpeza não é necessária, apenas diagnóstico
+        pass
 
 # --- ENDPOINT WEBSOCKET DE STREAMING (CORRIGIDO PARA ASGI) ---
 
@@ -184,3 +164,4 @@ async def websocket_transcription_endpoint(websocket: WebSocket):
         # Limpeza final de recursos
         audio_buffer.close()
         print("WebSocket handler finished.")
+
