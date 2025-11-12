@@ -82,7 +82,7 @@ def convert_and_transcribe_sync(raw_audio_data: bytes, segment_id: str) -> str:
             "-p", "0" 
         ], stdout=PIPE, stderr=PIPE)
         
-        out, err = proc.communicate(timeout=45) 
+        out, err = proc.communicate(timeout=300) 
         
         if proc.returncode != 0:
              whisper_stderr = err.decode('utf-8', errors='ignore')
@@ -167,3 +167,4 @@ async def websocket_transcription_endpoint(websocket: WebSocket):
     finally:
         audio_buffer.close()
         print("WebSocket handler finished.")
+
