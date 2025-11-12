@@ -35,9 +35,11 @@ COPY main.py /app/
 # 6. COPIA DO MODELO: ggml-tiny.bin
 RUN mkdir -p /app/models
 COPY models/ggml-tiny.bin /app/models/
+COPY test.wav /app/
 
 # 7. Expor porta
 EXPOSE 3000
 
 # 8. CMD FINAL: Usar Gunicorn com UvicornWorker e flags de proxy
 CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:3000", "--env", "UVICORN_KWARGS={'proxy_headers': True, 'forwarded_allow_all': True}"]
+
