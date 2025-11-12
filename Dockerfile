@@ -40,5 +40,8 @@ EXPOSE 3000
 
 # 8. ⭐️ CORREÇÃO CRÍTICA 2 (CMD): Usar Gunicorn com UvicornWorker
 # Este comando garante que o Uvicorn rode com múltiplos workers e suporte robusto a WSS/proxy.
-CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:3000", "--forwarded-allow-all", "--proxy-headers"]
+CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "main:app", \
+    "--bind", "0.0.0.0:3000", \
+    "--env", "UVICORN_KWARGS={'proxy_headers': True, 'forwarded_allow_all': True}"]
+
 
