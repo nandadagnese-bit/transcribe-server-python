@@ -1,18 +1,32 @@
-# main.py - FastAPI server com WebSockets para Streaming em Tempo Real
-import os, shutil, uuid
-import wave # Necessário para lidar com chunks de áudio
-from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, Depends, status
-from fastapi.responses import JSONResponse
-from subprocess import Popen, PIPE, TimeoutExpired
-from io import BytesIO # Para processar dados binários na memória
-
-# ✅ 1. Importar o Middleware de CORS
+# main.py - FastAPI server com WebSockets para Transcrição em Tempo Real
+import os
+import shutil
+import uuid
+import json
+import asyncio
+import io
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.websockets import WebSocketDisconnect # Para lidar com a desconexão
+from subprocess import Popen, PIPE, TimeoutExpired
+from concurrent.futures import ThreadPoolExecutor
+from typing import List
+
+# --- CONFIGURAÇÃO GLOBAL E PATHS ---
+# ✅ PATHS ATUALIZADOS (conforme o Dockerfile e compilação)
+WHISPER_BIN = "/app/main-whisper"
+MODEL_PATH = "/app/models/ggml-tiny.bin"
+UPLOAD_DIR = "/tmp/uploads"
+
+# Configuração do executor para rodar tarefas bloqueantes (CPU-bound)
+# Usamos ThreadPoolExecutor para rodar o subprocesso do whisper.cpp
+executor = ThreadPoolExecutor(max_workers=1)
+
+# Cria a pasta de upload temporária
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = FastAPI()
 
-# ✅ 2. Definir as origens permitidas (seu site)
+# --- CONFIGURAÇÃO CORS ---
 origins = [
     "https://nexuspsi.com.br",
     "http://localhost",
@@ -20,7 +34,6 @@ origins = [
     "null"
 ]
 
-# ✅ 3. Adicionar o Middleware de CORS ao app
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -29,154 +42,161 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- O RESTO DO SEU CÓDIGO ---
+# --- FUNÇÕES DE AJUDA ---
 
-# ✅ 4. CAMINHOS ATUALIZADOS
-WHISPER_BIN = "/app/main-whisper"                # Caminho do executável pré-compilado
-MODEL_PATH = "/app/models/ggml-tiny.bin"         # Caminho do modelo 'tiny'
-
-UPLOAD_DIR = "/tmp/uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-# -------------------------------------------------------------
-# FUNÇÕES AUXILIARES
-# -------------------------------------------------------------
-
-def cleanup_paths(paths):
-    for p in paths:
+def cleanup_paths(paths: List[str]):
+    """Remove arquivos do disco, ignorando erros."""
+    for path in paths:
         try:
-            if os.path.exists(p):
-                os.remove(p)
-        except:
+            os.remove(path)
+        except OSError:
             pass
 
-def process_chunk_and_transcribe(wav_data: bytes) -> str:
+def convert_and_transcribe_sync(raw_audio_data: bytes, segment_id: str) -> str:
     """
-    Salva o chunk WAV na memória e o transcreve usando whisper.cpp.
+    Função SÍNCRONA que converte o áudio RAW e chama o whisper.cpp.
+    Esta função deve ser executada no ThreadPoolExecutor.
     """
-    file_id = str(uuid.uuid4())
-    wav_path = os.path.join(UPLOAD_DIR, f"{file_id}.wav")
+    raw_path = os.path.join(UPLOAD_DIR, f"{segment_id}.webm")
+    wav_path = os.path.join(UPLOAD_DIR, f"{segment_id}.wav")
 
-    # Salva o buffer na memória como um arquivo WAV temporário
-    with open(wav_path, "wb") as f:
-        f.write(wav_data)
-
-    # Executa whisper.cpp (usamos um timeout mais curto para chunks)
     try:
-        proc = Popen([WHISPER_BIN, "-m", MODEL_PATH, "-f", wav_path, "-l", "auto", "--no-timestamps"], stdout=PIPE, stderr=PIPE)
-        # Timeout reduzido, pois esperamos que o chunk seja pequeno (ex: 30 segundos de áudio)
-        out, err = proc.communicate(timeout=45) 
-    except TimeoutExpired:
-        raise Exception("Whisper chunk timeout") # Lançar exceção para ser capturada pelo websocket
+        # 1. SALVAR DADOS RAW (WebM/Opus)
+        with open(raw_path, "wb") as f:
+            f.write(raw_audio_data)
 
-    cleanup_paths([wav_path])
-    text_out = out.decode(errors="ignore").strip()
-    
-    # Se a saída estiver vazia, verifica o erro (pode ser o próprio texto)
-    if not text_out:
-        text_out = err.decode(errors="ignore").strip()
-    
-    # O Whisper retorna várias linhas, pegamos apenas a transcrição principal
-    return text_out.split('\n')[-1].strip()
+        # 2. CONVERTER PARA WAV 16kHz MONO (para o whisper.cpp)
+        # O ffmpeg é crucial para lidar com o codec Opus
+        p = Popen([
+            "ffmpeg", "-y", "-i", raw_path,
+            "-ac", "1", "-ar", "16000",
+            wav_path
+        ], stdout=PIPE, stderr=PIPE)
+        out, err = p.communicate(timeout=10) # Timeout reduzido
+        
+        if not os.path.exists(wav_path):
+            # Tenta mostrar o erro do FFmpeg
+            raise Exception(f"FFmpeg falhou. STDERR: {err.decode('utf-8', errors='ignore')}")
 
-# -------------------------------------------------------------
-# ENDPOINT DE ARQUIVO COMPLETO (Se você ainda precisar dele)
-# -------------------------------------------------------------
+        # 3. EXECUTAR WHISPER.CPP
+        proc = Popen([
+            WHISPER_BIN, 
+            "-m", MODEL_PATH, 
+            "-f", wav_path, 
+            "-l", "auto",
+            "-t", "4",  # Usa 4 threads para processamento mais rápido
+            "-p", "0"   # Desabilita o print de progresso
+        ], stdout=PIPE, stderr=PIPE)
+        
+        out, err = proc.communicate(timeout=45) # Timeout estendido para o Whisper
+        
+        if proc.returncode != 0:
+             raise Exception(f"Whisper falhou (Código {proc.returncode}). STDERR: {err.decode('utf-8', errors='ignore')}")
 
-@app.get("/")
-async def root():
-    return {"status":"ok"}
+        # 4. EXTRAIR O TEXTO
+        output = out.decode('utf-8', errors='ignore')
+        
+        # Encontra o texto final na saída do whisper.cpp (última linha)
+        transcribed_text = output.strip().split('\n')[-1].split(':')[-1].strip()
+        
+        return transcribed_text
 
-@app.post("/transcribe")
-async def transcribe(audio: UploadFile = File(...)):
-    # salva arquivo recebido
-    file_id = str(uuid.uuid4())
-    raw_path = os.path.join(UPLOAD_DIR, f"{file_id}_{audio.filename}")
-    with open(raw_path, "wb") as f:
-        shutil.copyfileobj(audio.file, f)
-
-    wav_path = raw_path + ".wav"
-    # converte para WAV 16k mono
-    try:
-        p = Popen(["ffmpeg", "-y", "-i", raw_path, "-ac", "1", "-ar", "16000", wav_path], stdout=PIPE, stderr=PIPE)
-        out, err = p.communicate(timeout=600) # AUMENTADO PARA EVITAR FALHA EM ÁUDIOS LONGOS
-    except TimeoutExpired:
-        cleanup_paths([raw_path])
-        raise HTTPException(status_code=500, detail="ffmpeg timeout")
-
-    if not os.path.exists(wav_path):
-        cleanup_paths([raw_path])
-        raise HTTPException(status_code=500, detail="Conversion failed")
-
-    # executa whisper.cpp
-    try:
-        proc = Popen([WHISPER_BIN, "-m", MODEL_PATH, "-f", wav_path, "-l", "auto"], stdout=PIPE, stderr=PIPE)
-        out, err = proc.communicate(timeout=1800) # AUMENTADO MUITO PARA ÁUDIOS LONGOS
-    except TimeoutExpired:
+    finally:
+        # 5. LIMPEZA
         cleanup_paths([raw_path, wav_path])
-        raise HTTPException(status_code=500, detail="whisper timeout")
 
-    cleanup_paths([raw_path, wav_path])
-    text_out = out.decode(errors="ignore").strip()
-    if not text_out:
-        text_out = err.decode(errors="ignore").strip()
-    
-    return JSONResponse({"text": text_out})
+# --- ENDPOINT OBSOLETO (MANTIDO COMENTADO) ---
 
-# -------------------------------------------------------------
-# ✅ NOVO ENDPOINT DE WEBSOCKETS PARA STREAMING EM TEMPO REAL
-# -------------------------------------------------------------
+# @app.post("/transcribe")
+# async def transcribe_audio_post(audio: UploadFile = File(...)):
+#     """Endpoint para receber um arquivo de áudio via POST (OBSELETO)."""
+#     # Este endpoint é a causa do erro 500 por timeout. 
+#     # A nova arquitetura usa WebSockets.
+#     raise HTTPException(status_code=501, detail="Endpoint /transcribe obsoleto. Use /ws/transcribe_stream.")
 
-# Tamanho do buffer em segundos * taxa de amostragem * canais * tamanho do sample (16-bit)
-# Se o áudio for 16000Hz, 1 canal, 16-bit (2 bytes): 16000 * 1 * 2 = 32000 bytes por segundo
-CHUNK_DURATION_SECONDS = 30 # Processar a cada 30 segundos de áudio
-SAMPLE_RATE = 16000
-CHUNK_BUFFER_SIZE = CHUNK_DURATION_SECONDS * SAMPLE_RATE * 2 # 960,000 bytes para 30 segundos de 16-bit PCM
+# --- ENDPOINT WEBSOCKET DE STREAMING (CORRIGIDO) ---
 
 @app.websocket("/ws/transcribe_stream")
 async def websocket_transcription_endpoint(websocket: WebSocket):
     await websocket.accept()
-    audio_buffer = bytearray()
+    print("WebSocket connection accepted.")
     
+    # Buffer para acumular áudio entre chunks (cerca de 4 segundos)
+    audio_buffer = io.BytesIO()
+    # Contador para identificar o segmento
+    segment_counter = 0
+
     try:
         while True:
-            # Recebe dados binários (esperamos pacotes PCM de 16kHz)
+            # 1. RECEBE CHUNK BINÁRIO DO CLIENTE
             data = await websocket.receive_bytes()
-            audio_buffer.extend(data)
             
-            # Se o buffer atingiu o tamanho para um chunk processável
-            if len(audio_buffer) >= CHUNK_BUFFER_SIZE:
+            # Se a conexão ainda está aberta, o cliente está enviando dados
+            if data:
+                audio_buffer.write(data)
                 
-                # Pega a primeira parte do buffer para processamento
-                chunk_to_process = audio_buffer[:CHUNK_BUFFER_SIZE]
+                # O cliente envia a cada 4 segundos. O buffer será processado
+                # na próxima rodada, a menos que a lógica de "buffer final" seja ativada.
                 
-                # Remove o chunk processado do buffer original
-                audio_buffer = audio_buffer[CHUNK_BUFFER_SIZE:]
+                # ✅ LÓGICA DE PROCESSAMENTO (Exemplo: processar a cada 2 chunks recebidos)
+                # Este é um placeholder. O seu cliente envia um chunk com dados de 4s.
+                # Como o cliente já está enviando um pacote "pronto para processar",
+                # processamos a cada pacote, mas mantendo a lógica de buffer simples.
+                
+                # 2. RODA O PROCESSAMENTO NO EXECUTOR
+                segment_counter += 1
+                segment_id = f"seg_{segment_counter}"
+                
+                # Pega o conteúdo atual do buffer e o reseta
+                buffer_content = audio_buffer.getvalue()
+                audio_buffer = io.BytesIO()
 
-                # Chama a função de processamento (que salva e chama whisper.cpp)
-                try:
-                    transcribed_text = process_chunk_and_transcribe(chunk_to_process)
-                    
-                    # Envia o resultado de volta para o cliente
-                    if transcribed_text:
-                        await websocket.send_json({"text": transcribed_text, "status": "chunk_processed"})
-                        
-                except Exception as e:
-                    print(f"Erro ao processar chunk: {e}")
-                    await websocket.send_json({"error": str(e), "status": "processing_failed"})
+                # Roda a função síncrona em um thread separado (evita bloqueio do ASGI)
+                loop = asyncio.get_event_loop()
+                transcribed_text = await loop.run_in_executor(
+                    executor,
+                    convert_and_transcribe_sync,
+                    buffer_content,
+                    segment_id
+                )
+
+                # 3. ENVIA O RESULTADO TRANSCRITO
+                await websocket.send_json({"text": transcribed_text, "status": "chunk_complete"})
+                print(f"Segmento {segment_id} processado. Texto: {transcribed_text[:40]}...")
 
     except WebSocketDisconnect:
-        print("Cliente desconectado.")
-    except Exception as e:
-        print(f"Erro inesperado no WebSocket: {e}")
+        # ✅ CORREÇÃO FINAL: Este é o comportamento esperado quando o cliente fecha.
+        # Nenhuma chamada explícita a 'websocket.close()' é necessária aqui.
+        print("Cliente desconectado (WebSocketDisconnect). Processando buffer final...")
         
-    finally:
-        # Se houver áudio restante no buffer, processa o final
-        if len(audio_buffer) > 0:
+        # 4. PROCESSA O BUFFER FINAL (se houver áudio remanescente)
+        final_buffer_content = audio_buffer.getvalue()
+        if final_buffer_content:
             try:
-                transcribed_text = process_chunk_and_transcribe(audio_buffer)
-                if transcribed_text:
-                    await websocket.send_json({"text": transcribed_text, "status": "final_chunk"})
+                loop = asyncio.get_event_loop()
+                transcribed_text = await loop.run_in_executor(
+                    executor,
+                    convert_and_transcribe_sync,
+                    final_buffer_content,
+                    "seg_final"
+                )
+                await websocket.send_json({"text": transcribed_text, "status": "final_chunk_complete"})
             except Exception as e:
-                print(f"Erro ao processar chunk final: {e}")
-        await websocket.close()
+                print(f"Erro ao processar o chunk final: {e}")
+                
+    except Exception as e:
+        # 5. TRATAMENTO DE ERRO INESPERADO (e.g., falha no Whisper)
+        print(f"ERRO CRÍTICO no WebSocket: {e}")
+        # Tenta enviar a mensagem de erro e fechar a conexão de forma limpa
+        try:
+            await websocket.send_json({"error": f"Erro interno do servidor: {str(e)}", "status": "server_error"})
+            # Tentar fechar é necessário em erros inesperados, mas o Uvicorn pode dar o erro ASGI
+            # se já estiver em estado de fechamento. Manter o try/except ao redor do close() é a melhor prática.
+            await websocket.close() 
+        except Exception:
+            pass # A conexão já está inativa, ignora a falha de send/close
+    
+    finally:
+        # Garante que o buffer seja limpo e o handler termine.
+        audio_buffer.close()
+        print("WebSocket handler finished.")
