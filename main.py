@@ -1,39 +1,29 @@
-# main.py - FastAPI server com WebSockets e Diagnóstico de Áudio
+# main.py - Versão de Diagnóstico Final (FFmpeg/WAV Check)
 import os
 import shutil
 import uuid
 import json
 import asyncio
 import io
-import time # Necessário para o novo diagnóstico de tamanho
+import time
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from subprocess import Popen, PIPE, TimeoutExpired
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
+from starlette import status # Necessário para o código de status do WebSocket
 
 # --- CONFIGURAÇÃO GLOBAL E PATHS ---
-# Caminhos devem corresponder ao Dockerfile
 WHISPER_BIN = "/app/main-whisper"
 MODEL_PATH = "/app/models/ggml-tiny.bin"
 UPLOAD_DIR = "/tmp/uploads"
 
-# Configuração do executor para rodar tarefas bloqueantes (CPU-bound)
 executor = ThreadPoolExecutor(max_workers=1)
-
-# Cria a pasta de upload temporária
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
 app = FastAPI()
 
 # --- CONFIGURAÇÃO CORS ---
-origins = [
-    "https://nexuspsi.com.br",
-    "http://localhost",
-    "http://127.0.0.1",
-    "null"
-]
-
+origins = ["https://nexuspsi.com.br", "http://localhost", "http://127.0.0.1", "null"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -45,51 +35,69 @@ app.add_middleware(
 # --- FUNÇÕES DE AJUDA ---
 
 def cleanup_paths(paths: List[str]):
-    """Remove arquivos do disco, ignorando erros."""
     for path in paths:
         try:
             os.remove(path)
         except OSError:
             pass
 
-# main.py - DENTRO da função convert_and_transcribe_sync
-
 def convert_and_transcribe_sync(raw_audio_data: bytes, segment_id: str) -> str:
     """
-    MODO TESTE: Tenta transcrever um arquivo WAV estático (test.wav)
-    para verificar se o binário e o modelo estão funcionando.
+    Função SÍNCRONA que converte o áudio RAW e chama o whisper.cpp.
+    Inclui diagnóstico para falha de FFmpeg/WAV vazio.
     """
-    test_wav_path = "/app/test.wav" 
-    
-    if not os.path.exists(test_wav_path) or os.path.getsize(test_wav_path) < 100:
-        return "ERRO DE TESTE: test.wav não encontrado ou vazio no contêiner."
+    raw_path = os.path.join(UPLOAD_DIR, f"{segment_id}.webm")
+    wav_path = os.path.join(UPLOAD_DIR, f"{segment_id}.wav")
 
     try:
-        # 3. EXECUTAR WHISPER.CPP com o arquivo de teste
+        # 1. SALVAR DADOS RAW (WebM/Opus)
+        with open(raw_path, "wb") as f:
+            f.write(raw_audio_data)
+
+        # 2. CONVERTER PARA WAV 16kHz MONO (para o whisper.cpp)
+        p = Popen([
+            "ffmpeg", "-y", "-i", raw_path,
+            "-ac", "1", "-ar", "16000",
+            wav_path
+        ], stdout=PIPE, stderr=PIPE)
+        out, err = p.communicate(timeout=10)
+
+        # ⭐️ DIAGNÓSTICO CRÍTICO: Verifica se o arquivo WAV foi criado corretamente ⭐️
+        wav_size = 0
+        if os.path.exists(wav_path):
+             wav_size = os.path.getsize(wav_path)
+             
+        # Se o tamanho for inferior a 1000 bytes (WAV inválido ou vazio)
+        if wav_size < 1000: 
+            ffmpeg_error = err.decode('utf-8', errors='ignore')
+            raise Exception(f"FFmpeg/WAV inválido. Tamanho WAV: {wav_size} bytes. Saída do FFmpeg: {ffmpeg_error}")
+
+        # 3. EXECUTAR WHISPER.CPP
         proc = Popen([
             WHISPER_BIN, 
             "-m", MODEL_PATH, 
-            "-f", test_wav_path, # Usa o arquivo de teste!
+            "-f", wav_path, 
             "-l", "auto",
-            "-t", "4", "-p", "0" 
+            "-t", "4",
+            "-p", "0" 
         ], stdout=PIPE, stderr=PIPE)
         
-        out, err = proc.communicate(timeout=15) # Timeout reduzido para teste
+        out, err = proc.communicate(timeout=45) 
         
         if proc.returncode != 0:
              whisper_stderr = err.decode('utf-8', errors='ignore')
-             # Se o Whisper falhar, o problema é permissão ou modelo
-             raise Exception(f"ERRO CRÍTICO (TESTE). STDERR: {whisper_stderr}")
+             raise Exception(f"Whisper falhou (Código {proc.returncode}). STDERR: {whisper_stderr}")
 
         # 4. EXTRAIR O TEXTO
-        output = out.decode('utf-8', errors='ignore')
+        output = out.decode('utf-8', errors="ignore")
+        # Assume que o texto transcrito é o último pedaço de informação
         transcribed_text = output.strip().split('\n')[-1].split(':')[-1].strip()
         
-        return f"[TESTE SUCESSO] Texto: {transcribed_text}"
+        return transcribed_text
 
     finally:
-        # Limpeza não é necessária, apenas diagnóstico
-        pass
+        # 5. LIMPEZA
+        cleanup_paths([raw_path, wav_path])
 
 # --- ENDPOINT WEBSOCKET DE STREAMING (CORRIGIDO PARA ASGI) ---
 
@@ -102,13 +110,11 @@ async def websocket_transcription_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("WebSocket connection accepted.")
     
-    # Buffer para acumular áudio entre chunks
     audio_buffer = io.BytesIO()
     segment_counter = 0
 
     try:
         while True:
-            # 1. RECEBE CHUNK BINÁRIO DO CLIENTE
             data = await websocket.receive_bytes()
             
             if data:
@@ -120,7 +126,6 @@ async def websocket_transcription_endpoint(websocket: WebSocket):
                 buffer_content = audio_buffer.getvalue()
                 audio_buffer = io.BytesIO() # Reseta o buffer
 
-                # 2. RODA O PROCESSAMENTO NO EXECUTOR
                 loop = asyncio.get_event_loop()
                 transcribed_text = await loop.run_in_executor(
                     executor,
@@ -129,12 +134,11 @@ async def websocket_transcription_endpoint(websocket: WebSocket):
                     segment_id
                 )
 
-                # 3. ENVIA O RESULTADO TRANSCRITO
                 await websocket.send_json({"text": transcribed_text, "status": "chunk_complete"})
                 print(f"Segmento {segment_id} processado. Texto: {transcribed_text[:40]}...")
 
     except WebSocketDisconnect:
-        # 4. TRATAMENTO DE DESCONEXÃO NORMAL
+        # TRATAMENTO DE DESCONEXÃO NORMAL
         print("Cliente desconectado (WebSocketDisconnect). Processando buffer final...")
         final_buffer_content = audio_buffer.getvalue()
         
@@ -152,16 +156,14 @@ async def websocket_transcription_endpoint(websocket: WebSocket):
                 print(f"Erro ao processar o chunk final: {e}")
                 
     except Exception as e:
-        # 5. TRATAMENTO DE ERRO INESPERADO (Evita o RuntimeError de fechamento)
+        # TRATAMENTO DE ERRO INESPERADO (Captura o erro de Whisper/FFmpeg e lança para o cliente)
         print(f"ERRO CRÍTICO no WebSocket: {e}")
         try:
             await websocket.send_json({"error": f"Erro interno do servidor: {str(e)}", "status": "server_error"})
             await websocket.close(code=status.WS_1011_INTERNAL_ERROR) 
         except Exception:
-            pass 
+            pass
     
     finally:
-        # Limpeza final de recursos
         audio_buffer.close()
         print("WebSocket handler finished.")
-
